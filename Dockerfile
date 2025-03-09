@@ -1,22 +1,20 @@
 # Usa la imagen oficial de PHP con Apache
 FROM php:8.4-apache
 
-# Establecer ServerName para suprimir la advertencia
+# Establecer ServerName para suprimir advertencias
 RUN echo "ServerName localhost" >> /etc/apache2/apache2.conf
 
-# Verificar si mod_rewrite está habilitado
-RUN a2enmod rewrite && \
-    if apache2ctl -M | grep -q 'rewrite_module'; then \
-        echo "mod_rewrite is enabled"; \
-    else \
-        echo "mod_rewrite is not enabled"; \
-        exit 1; \
-    fi
+# Habilitar mod_rewrite
+RUN a2enmod rewrite
 
-# Establecer DocumentRoot en /public
-RUN sed -i 's|/var/www/html|/var/www/html/public|g' /etc/apache2/sites-available/000-default.conf
+# Establecer DocumentRoot en /public y permitir .htaccess
+RUN sed -i 's|/var/www/html|/var/www/html/public|g' /etc/apache2/sites-available/000-default.conf \
+    && echo '<Directory /var/www/html/public>' >> /etc/apache2/apache2.conf \
+    && echo '    AllowOverride All' >> /etc/apache2/apache2.conf \
+    && echo '    Require all granted' >> /etc/apache2/apache2.conf \
+    && echo '</Directory>' >> /etc/apache2/apache2.conf
 
-# Instalar dependencias necesarias para Laravel (sin MySQL)
+# Instalar dependencias necesarias para Laravel
 RUN apt-get update && apt-get install -y \
     libpng-dev \
     libjpeg-dev \
@@ -28,18 +26,11 @@ RUN apt-get update && apt-get install -y \
     libonig-dev \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-install gd mbstring \
-    && echo "Installed required PHP extensions"
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copiar los archivos del proyecto Laravel (incluido el archivo .env y composer.json)
+# Copiar los archivos del proyecto Laravel
 COPY . /var/www/html
-
-# Verificar que el archivo `composer.json` exista
-RUN if [ ! -f /var/www/html/composer.json ]; then \
-        echo "composer.json is missing"; \
-        exit 1; \
-    else \
-        echo "composer.json exists"; \
-    fi
 
 # Definir el directorio de trabajo
 WORKDIR /var/www/html
@@ -47,43 +38,26 @@ WORKDIR /var/www/html
 # Instalar Composer globalmente
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 
-# Verificar que Composer se haya instalado correctamente
-RUN ls -l /usr/local/bin/composer  # Verificar que Composer está en la ubicación correcta
-RUN composer --version  # Verificar que Composer está accesible
-
-# Configurar Git para permitir acceso al repositorio
+# Solucionar error de propiedad en Git dentro del contenedor
 RUN git config --global --add safe.directory /var/www/html
 
-# Limpiar el directorio vendor para evitar problemas con archivos no comprometidos
+# Asegurar que la carpeta vendor no tenga archivos no comprometidos
 RUN rm -rf /var/www/html/vendor
 
-# Instalar las dependencias de Composer sin caché
-RUN COMPOSER_MEMORY_LIMIT=-1 composer install --no-dev --optimize-autoloader --prefer-dist --no-cache \
-    && echo "Composer dependencies installed successfully"
+# Asignar permisos correctos a Laravel antes de ejecutar Composer
+RUN chown -R www-data:www-data /var/www/html && chmod -R 775 storage bootstrap/cache
 
-# Asegurarse de que Apache sirva desde la carpeta 'public' y que .htaccess esté funcionando
-RUN if [ ! -f /var/www/html/public/.htaccess ]; then \
-        echo ".htaccess is missing"; \
-        exit 1; \
-    else \
-        echo ".htaccess file exists"; \
-    fi
+# Cambiar a usuario `www-data` y ejecutar Composer sin `sudo`
+USER www-data
 
-# Asignar permisos correctos a Laravel
-RUN chown -R www-data:www-data /var/www/html \
-    && chmod -R 775 storage bootstrap/cache \
-    && echo "Permissions set for storage and bootstrap/cache"
+# Instalar dependencias de Composer sin caché
+RUN COMPOSER_MEMORY_LIMIT=-1 composer install --no-dev --optimize-autoloader --prefer-dist --no-cache || (echo "Composer install failed" && exit 1)
 
-# Verificar las rutas en `web.php` y registrar en los logs si hay problemas
-RUN if [ ! -f /var/www/html/routes/web.php ]; then \
-        echo "Routes file web.php is missing.\n" >> /var/www/html/storage/logs/error.log; \
-        echo "Routes file web.php is missing" && exit 1; \
-    else \
-        echo "Routes file web.php exists"; \
-    fi
+# Volver a usuario root para continuar con el setup
+USER root
 
 # Exponer el puerto 80
 EXPOSE 80
 
-# Comando para iniciar Apache y manejar el proceso
-CMD ["sh", "-c", "apache2-foreground || echo 'Apache failed to start' >> /var/www/html/storage/logs/error.log && exit 1"]
+# Comando para iniciar Apache
+CMD ["apache2-foreground"]
