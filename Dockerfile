@@ -1,10 +1,10 @@
 # Usa la imagen oficial de PHP con Apache
 FROM php:8.4-apache
 
-# Establecer ServerName para evitar advertencias
+# Establecer ServerName para suprimir advertencias
 RUN echo "ServerName localhost" >> /etc/apache2/apache2.conf
 
-# Habilitar mod_rewrite para Laravel
+# Habilitar mod_rewrite
 RUN a2enmod rewrite
 
 # Establecer DocumentRoot en /public y permitir .htaccess
@@ -25,12 +25,9 @@ RUN apt-get update && apt-get install -y \
     curl \
     libonig-dev \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
-    && docker-php-ext-install gd mbstring pdo pdo_mysql \
+    && docker-php-ext-install gd mbstring \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
-
-# Instalar Composer globalmente
-RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 
 # Copiar los archivos del proyecto Laravel
 COPY . /var/www/html
@@ -38,19 +35,28 @@ COPY . /var/www/html
 # Definir el directorio de trabajo
 WORKDIR /var/www/html
 
-# Ajustar permisos de Laravel
-RUN chown -R www-data:www-data storage bootstrap/cache && chmod -R 777 storage bootstrap/cache
+# Instalar Composer globalmente
+RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+
+# Solucionar error de propiedad en Git dentro del contenedor
+RUN git config --global --add safe.directory /var/www/html
+
+# Asegurar que la carpeta vendor no tenga archivos no comprometidos
+RUN rm -rf /var/www/html/vendor
+
+# Asignar permisos correctos a Laravel antes de ejecutar Composer
+RUN chown -R www-data:www-data /var/www/html && chmod -R 775 storage bootstrap/cache
+
+# Cambiar a usuario `www-data` y ejecutar Composer sin `sudo`
+USER www-data
 
 # Instalar dependencias de Composer sin caché
 RUN COMPOSER_MEMORY_LIMIT=-1 composer install --no-dev --optimize-autoloader --prefer-dist --no-cache || (echo "Composer install failed" && exit 1)
 
-# Generar clave de aplicación Laravel
-RUN php artisan key:generate
+# Volver a usuario root para continuar con el setup
+USER root
 
-# Configurar Apache para usar el puerto de Railway
-RUN sed -i "s/Listen 80/Listen ${PORT}/" /etc/apache2/ports.conf
-
-# Exponer el puerto que Railway asigna dinámicamente
+# Exponer el puerto 80
 EXPOSE 80
 
 # Comando para iniciar Apache
